@@ -1,0 +1,9 @@
+variable_id,variable_name,label_en,role,data_type,codeset_id,unit,valid_from_year,valid_to_year
+HH_ID,household_id,Household identifier,key,VARCHAR,,,2020,
+TENURE,tenure,Tenure of dwelling,attribute,VARCHAR,TENURE,,2020,
+DWELL_TYPE,dwelling_type,Structural type of dwelling,attribute,VARCHAR,DWELL_TYPE,,2020,
+BEDROOMS,bedrooms,Number of bedrooms,attribute,INTEGER,,count,2020,
+HH_SIZE,household_size,Number of persons in household,attribute,INTEGER,,persons,2020,
+SHELTER_COST,monthly_shelter_cost,Monthly shelter cost,attribute,DECIMAL,,CAD/month,2020,
+CORE_NEED,core_housing_need,Household is in core housing need,attribute,VARCHAR,YES_NO,,2020,
+PERIOD_BUILT,period_built,Period of construction,attribute,VARCHAR,PERIOD_BUILT,,2025,

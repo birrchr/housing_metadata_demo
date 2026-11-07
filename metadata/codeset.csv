@@ -1,0 +1,5 @@
+codeset_id,codeset_name,description
+TENURE,Tenure,Whether the household owns or rents the dwelling
+DWELL_TYPE,Dwelling type,Structural type of the dwelling
+YES_NO,Yes / No,Generic binary indicator
+PERIOD_BUILT,Period of construction,Period in which the dwelling was built
