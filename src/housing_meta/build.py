@@ -100,8 +100,14 @@ def load_dataset(con: duckdb.DuckDBPyConnection, prov: str, year: int, path: Pat
     ).fetchall()
 
     keys = [c for c, _, role in mapped if role == "key"]
-    if len(keys) != 1:
+    if len(keys) > 1:
         raise ValueError(f"{dataset_id}: expected exactly one key column, found {keys}")
+    if not keys:
+        # Typically a new province with no mappings yet. Keep the dataset and its
+        # columns registered so the QA views report exactly what to map, rather
+        # than failing the whole build.
+        print(f"  {dataset_id:<8} {n_rows:>6} records  no key column mapped - values not loaded (see QA)")
+        return
     key_col = keys[0]
     attrs = [(c, v) for c, v, role in mapped if role == "attribute"]
 
@@ -177,22 +183,19 @@ def export(con: duckdb.DuckDBPyConnection, out_dir: Path) -> None:
     print(f"  exported {len(tables)} tables to {out_dir}")
 
 
-def main() -> None:
-    ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
-    ap.add_argument("--db", default=str(ROOT / "housing_meta.duckdb"))
-    ap.add_argument("--raw", default=str(ROOT / "data" / "raw"))
-    ap.add_argument("--metadata", default=str(ROOT / "metadata"))
-    ap.add_argument("--year", type=int, nargs="*", help="Only (re)load these reference years")
-    ap.add_argument("--export", metavar="DIR", help="Write every table to Parquet in DIR")
-    args = ap.parse_args()
-
-    con = duckdb.connect(args.db)
+def build(
+    con: duckdb.DuckDBPyConnection,
+    meta_dir: Path,
+    raw_dir: Path,
+    years: set[int] | None = None,
+) -> None:
+    """Run the whole pipeline against an open connection (file or in-memory)."""
     print("Reference metadata")
     run_sql_file(con, ROOT / "sql" / "01_schema.sql")
-    load_reference(con, Path(args.metadata))
+    load_reference(con, Path(meta_dir))
 
     print("Datasets")
-    files = discover(Path(args.raw), set(args.year) if args.year else None)
+    files = discover(Path(raw_dir), years)
     if not files:
         print("  no parquet files found - run generate_sample first")
     for prov, year, path in files:
@@ -204,6 +207,19 @@ def main() -> None:
     print("QA summary")
     for name, n in con.execute("SELECT * FROM meta.v_qa_summary").fetchall():
         print(f"  {'OK ' if n == 0 else '!! '} {name:<18} {n}")
+
+
+def main() -> None:
+    ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
+    ap.add_argument("--db", default=str(ROOT / "housing_meta.duckdb"))
+    ap.add_argument("--raw", default=str(ROOT / "data" / "raw"))
+    ap.add_argument("--metadata", default=str(ROOT / "metadata"))
+    ap.add_argument("--year", type=int, nargs="*", help="Only (re)load these reference years")
+    ap.add_argument("--export", metavar="DIR", help="Write every table to Parquet in DIR")
+    args = ap.parse_args()
+
+    con = duckdb.connect(args.db)
+    build(con, Path(args.metadata), Path(args.raw), set(args.year) if args.year else None)
 
     if args.export:
         export(con, Path(args.export))
