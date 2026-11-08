@@ -17,11 +17,16 @@ This model moves all of that knowledge into **rows of metadata**:
 
 The pipeline itself (one Python file and two SQL files) is the same for every province and
 every year. It builds with [DuckDB](https://duckdb.org) and exports to Parquet for
-Fabric / Delta.
+Fabric / Delta. In the demo the metadata tables are local CSV files; in production the
+maintained versions are kept in **OneLake** (see
+[Where the metadata lives](#where-the-metadata-lives)).
+
+The [data model](#the-model-8-tables) is a **proposed starting point**, not a final
+design. Expect it to change as it is tested on real deliveries.
 
 > **Start here:** [`notebooks/walkthrough.ipynb`](notebooks/walkthrough.ipynb) walks through
 > the whole idea with charts, ending with a simulated 2026 delivery (a column rename, a new
-> code and a new province) handled only with CSV edits.
+> code and a new province) handled only with metadata edits.
 
 ---
 
@@ -31,6 +36,7 @@ Fabric / Delta.
 - [Repository layout](#repository-layout)
 - [Core concepts](#core-concepts)
 - [The model: 8 tables](#the-model-8-tables)
+- [Where the metadata lives](#where-the-metadata-lives)
 - [How a load works](#how-a-load-works)
 - [Views: what analysts use](#views-what-analysts-use)
 - [QA checks](#qa-checks)
@@ -91,20 +97,20 @@ and an in-memory database, so it never changes the repo.
 | Section | Shows |
 |---|---|
 | 1. The problem | Raw schemas and raw codes per province |
-| 2. The metadata | The CSVs that hold every province-specific fact |
+| 2. The metadata | The tables that hold every province-specific fact |
 | 3. Build | The generic load |
 | 4. Lineage | A source-column map per variable × province × year, with renames highlighted |
 | 5. Harmonised output | Province codes become canonical, labelled values |
 | 6. Analysis | Cross-province charts with zero province logic |
 | 7. QA | Which check fires and what to edit |
-| 8. Annual cycle | 2026: rename + new code + new province, fixed with CSV rows only; the partial-reload gotcha |
+| 8. Annual cycle | 2026: rename + new code + new province, fixed with metadata rows only; the partial-reload gotcha |
 
 ---
 
 ## Repository layout
 
 ```
-metadata/                 Reference + mapping tables (the only thing you edit year to year)
+metadata/                 Demo copies of the reference + mapping tables (production: OneLake)
   codeset.csv             Named code lists
   code.csv                Canonical codes + labels, with validity
   variable.csv            Canonical variables: name, label, type, unit, codeset, role
@@ -163,6 +169,10 @@ Each QA view maps to a specific metadata fix.
 
 ## The model: 8 tables
 
+This is the **proposed** model the demo uses. It is a starting point for discussion,
+and some tables or columns are likely to change (see
+[Known limitations](#known-limitations-and-next-steps)).
+
 ```mermaid
 erDiagram
     codeset ||--o{ code : contains
@@ -188,12 +198,33 @@ erDiagram
 
 | Group | Lives in | Maintained by | Rebuilt |
 |---|---|---|---|
-| Reference | `metadata/*.csv` in git | Subject-matter owners | Every build |
-| Mapping | `metadata/*.csv` in git | Data team | Every build |
-| Production | DuckDB / Parquet | The pipeline | One province-year at a time |
+| Reference | OneLake (demo: `metadata/*.csv`) | Subject-matter owners | Every build |
+| Mapping | OneLake (demo: `metadata/*.csv`) | Data team | Every build |
+| Production | DuckDB, exported to Parquet / Delta | The pipeline | One province-year at a time |
 
 Each variable has a `role`: exactly one `key` (the record identifier, `HH_ID`) and any
 number of `attribute`s.
+
+---
+
+## Where the metadata lives
+
+| | Demo (this repo) | Production |
+|---|---|---|
+| Reference + mapping tables | Hand-written CSV files in `metadata/` | Maintained tables, with the production versions saved in **OneLake** |
+| Raw deliveries | `data/raw/year=YYYY/province=XX/` | The province files as landed in OneLake |
+| Production tables | `housing_meta.duckdb` | Exported to Parquet / Delta in OneLake (`--export`) |
+
+What matters is that there is **one maintained set of metadata tables** that every
+province and every year is loaded against, with a clear owner and a review step before
+a change becomes the production version. The CSV files are just the simplest way to
+show that in a demo.
+
+The build reads the metadata from whatever folder `--metadata` points at. In Fabric,
+pointing it at a lakehouse `Files/` folder holding the same five tables works as-is. If
+the production versions are stored as Delta tables, `load_reference()` in
+[`build.py`](src/housing_meta/build.py) needs a small change to read Delta instead of
+CSV. The rest of the pipeline doesn't change.
 
 ---
 
@@ -201,7 +232,8 @@ number of `attribute`s.
 
 `housing-build` (see [`src/housing_meta/build.py`](src/housing_meta/build.py)):
 
-1. Recreate the reference and mapping tables from `metadata/*.csv`. Codes are read as
+1. Recreate the reference and mapping tables from the metadata folder (`--metadata`,
+   default `metadata/`). Codes are read as
    text, so `01` stays `01`.
 2. Find every `data/raw/year=YYYY/province=XX/*.parquet` (filtered by `--year` if given).
 3. For each file:
@@ -260,7 +292,8 @@ The sample data plants two problems: BC sends an extra `REGION_INTERNAL` column,
 1. Drop the new files into `data/raw/year=YYYY/province=XX/`.
 2. Run `uv run housing-build --year YYYY`.
 3. Read the QA summary. For anything non-zero, query the matching `v_qa_*` view.
-4. Edit `metadata/*.csv` (see the table below) and open a PR for review.
+4. Edit the metadata tables (see the table below), have the change reviewed, and save
+   the approved version to OneLake as the new production metadata.
 5. Re-run. Repeat until the QA is clean.
 6. **If any edited row has `valid_from_year` before YYYY, reload those years too**
    (`--year 2025 2026`), or do a full rebuild. See
@@ -278,7 +311,7 @@ The sample data plants two problems: BC sends an extra `REGION_INTERNAL` column,
 
 In the notebook's 2026 scenario (an ON column rename, a BC code needing a new canonical
 code, and a whole new province, Manitoba, with its own names and codes), the full fix is
-**24 CSV rows and zero lines of Python**.
+**24 metadata rows and zero lines of Python**.
 
 ---
 
@@ -341,5 +374,5 @@ These came up in review and are worth settling before production use:
 - Put a non-zero `v_qa_summary` in CI as a failing check, so a new province code can't
   slip through quietly.
 - Bilingual labels: add `label_fr` next to `label_en` in `code` and `variable`.
-- The model isn't specific to housing. Swap the CSVs and the sample generator and the
+- The model isn't specific to housing. Swap the metadata tables and the sample generator and the
   same pipeline handles any "many sources, one canonical schema, annual drift" problem.
