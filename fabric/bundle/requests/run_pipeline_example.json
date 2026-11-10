@@ -1,0 +1,10 @@
+{
+  "executionData": {
+    "parameters": {
+      "source_system": "ON",
+      "reference_year": 2025,
+      "metadata_release": "current",
+      "mode": "validate"
+    }
+  }
+}

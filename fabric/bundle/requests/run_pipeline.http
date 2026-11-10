@@ -1,0 +1,21 @@
+### Start one province-year run (the call your scheduling tool makes)
+# Token audience: https://api.fabric.microsoft.com  (user, service principal or managed identity)
+POST https://api.fabric.microsoft.com/v1/workspaces/<WORKSPACE_ID>/items/<PIPELINE_ID>/jobs/instances?jobType=Pipeline
+Authorization: Bearer <TOKEN>
+Content-Type: application/json
+
+{
+  "executionData": {
+    "parameters": {
+      "source_system": "ON",
+      "reference_year": 2025,
+      "metadata_release": "current",
+      "mode": "validate"
+    }
+  }
+}
+
+### Response: 202 Accepted with a Location header. Poll it until status is
+### Completed, Failed or Cancelled; failureReason explains a failed run (e.g. blocking QA issues).
+GET <Location header from the call above>
+Authorization: Bearer <TOKEN>

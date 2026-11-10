@@ -1,13 +1,18 @@
 [project]
 name = "housing-meta"
-version = "0.1.0"
+version = "0.2.0"
 description = "Generalised metadata model (records, variables, codesets) for annual housing data in DuckDB"
 requires-python = ">=3.10"
 dependencies = ["duckdb>=1.1", "pyarrow>=15"]
 
+[project.optional-dependencies]
+# Staging Delta tables (preinstalled in Fabric notebooks) and the pipeline caller's sign-in
+fabric = ["deltalake>=0.18", "azure-identity>=1.15"]
+
 [project.scripts]
 housing-sample = "housing_meta.generate_sample:main"
 housing-build  = "housing_meta.build:main"
+housing-fabric = "housing_meta.fabric_cli:main"
 
 [build-system]
 requires = ["hatchling"]
@@ -19,3 +24,4 @@ packages = ["src/housing_meta"]
 [dependency-groups]
 # Notebook walkthrough: uv sync --group demo
 demo = ["jupyterlab>=4.1", "ipykernel", "pandas>=2", "matplotlib>=3.8"]
+dev = ["pytest>=8", "deltalake>=0.18"]

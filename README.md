@@ -27,6 +27,9 @@ design. Expect it to change as it is tested on real deliveries.
 > **Start here:** [`notebooks/walkthrough.ipynb`](notebooks/walkthrough.ipynb) walks through
 > the whole idea with charts, ending with a simulated 2026 delivery (a column rename, a new
 > code and a new province) handled only with metadata edits.
+>
+> **Running in Fabric:** [`fabric/README.md`](fabric/README.md) describes a lightweight pipeline
+> that loads one province-year per call, controlled by four parameters.
 
 ---
 
@@ -42,6 +45,7 @@ design. Expect it to change as it is tested on real deliveries.
 - [QA checks](#qa-checks)
 - [Annual maintenance playbook](#annual-maintenance-playbook)
 - [Querying the output](#querying-the-output)
+- [Running in Fabric](#running-in-fabric)
 - [Known limitations and next steps](#known-limitations-and-next-steps)
 - [Notes for production](#notes-for-production)
 
@@ -56,9 +60,12 @@ uv sync
 uv run housing-sample                  # fake Parquet for ON, BC, NS for 2024 and 2025
 uv run housing-build                   # builds housing_meta.duckdb and prints QA
 uv run housing-build --year 2025       # annual run: reloads only 2025
+uv run housing-build --province ON --year 2025   # one province-year
 uv run housing-build --export output   # also writes every table to Parquet
 duckdb housing_meta.duckdb < sql/03_demo_queries.sql
 ```
+
+Tests (build, QA, Fabric staging and the generated pipeline): `uv sync --group dev && uv run pytest`.
 
 Example build output:
 
@@ -117,15 +124,24 @@ metadata/                 Demo copies of the reference + mapping tables (product
   source_column_map.csv   Province column  -> canonical variable, with validity
   source_code_map.csv     Province value   -> canonical code, with validity
 data/raw/year=YYYY/province=XX/*.parquet   Input files (Hive-style layout)
-sql/
-  01_schema.sql           Table definitions
-  02_views.sql            Labelled views, data dictionary, QA views
-  03_demo_queries.sql     Example queries
+sql/03_demo_queries.sql   Example queries
 src/housing_meta/
   build.py                The generic pipeline (housing-build)
+  sql/                    01_schema.sql (tables), 02_views.sql (labelled, dictionary, QA views)
   generate_sample.py      Fake province data (housing-sample)
+  staging.py              Staging Delta tables for the Fabric Warehouse
+  fabric_run.py           One province-year run (what the Fabric notebook calls)
+  fabric_pipeline.py      Generates the pipeline definition, notebook and Warehouse SQL
+  fabric_cli.py           housing-fabric: bundle / deploy-pipeline / run
+  fabric_api.py           Minimal Fabric REST client
+  fabric_assets/warehouse Warehouse tables, load procedure and views (templates)
+fabric/
+  README.md               Deploying and calling the pipeline
+  bundle/                 Generated, importable files (housing-fabric bundle)
+tests/                    pytest suite
 notebooks/
   walkthrough.ipynb       Narrative demo with charts
+docs/                     Team deck and Fabric design doc
 ```
 
 ---
@@ -348,6 +364,26 @@ More in [`sql/03_demo_queries.sql`](sql/03_demo_queries.sql).
 
 ---
 
+## Running in Fabric
+
+The same package runs in Fabric as a two-step pipeline, **one province-year per call**:
+
+```
+pl_housing_load(source_system, reference_year, metadata_release, mode)
+  ├─ notebook          build + stage that delivery, refresh the Lakehouse SQL endpoint
+  └─ stored procedure  QA gate → metadata history → dimensions → facts (Warehouse star schema)
+```
+
+Your scheduling tool starts a run with a single REST call carrying the four parameters,
+and a run with blocking QA issues ends as **Failed** with the reason. Everything
+deployable (pipeline definition, notebook, Warehouse SQL, example requests) is generated
+by `uv run housing-fabric bundle`. Setup steps, the request format, a one-province
+test plan and troubleshooting are in [`fabric/README.md`](fabric/README.md). The
+design and its open questions are in
+[`docs/fabric_deployment_design.md`](docs/fabric_deployment_design.md).
+
+---
+
 ## Known limitations and next steps
 
 These came up in review and are worth settling before production use:
@@ -355,12 +391,12 @@ These came up in review and are worth settling before production use:
 | # | Limitation | Effect | Suggested fix |
 |---|---|---|---|
 | 1 | **No way to ignore a column on purpose.** Every unmapped column is a QA failure. | `REGION_INTERNAL` stays red for good, and the QA stops meaning anything if people learn to ignore it. | Allow `source_column_map` rows with an empty `variable_id` (or an `action = 'ignore'` column) meaning "known, excluded", and have `v_qa_unmapped_columns` flag only columns with no row at all. |
-| 2 | **Recoded values are stored, not derived.** `record_value.value` is fixed at load time. | A mapping fix that reaches back to earlier years doesn't apply until those years are reloaded (the notebook shows this). | Short term: reload every affected year (playbook step 6). Longer term: store only `source_value` and recode in a view, or have the build detect metadata changes and reload affected years. |
+| 2 | **Recoded values are stored, not derived.** `record_value.value` is fixed at load time. | A mapping fix that reaches back to earlier years doesn't apply until those years are reloaded (the notebook shows this). | Short term: reload every affected year (playbook step 6). In Fabric, each publish now lists affected province-years as `reload_recommended` warnings. Longer term: store only `source_value` and recode in a view. |
 | 3 | **One dataset per province-year.** `dataset_id = {province}_{year}`. | If a province delivers several Parquet files in one partition, each one overwrites the last and only the final file is kept. | Include the file name in `dataset_id`, or read the partition as one glob. |
 | 4 | **`NULL`s are dropped** by `UNPIVOT`. | You can't tell "delivered as null" from "not delivered" in `record_value`. | Use `UNPIVOT INCLUDE NULLS` if that difference matters. |
 | 5 | **No orphan check on mapping targets.** A `source_code_map.code` that isn't in `code` is only caught once data uses it. | Typos stay hidden until the code turns up in the data. | Add a static metadata QA view (map targets ⊆ codes valid in the same years). |
 | 6 | **One grain.** One `key` variable per file; the wide table is named `household_harmonised`. | Person-level or dwelling-level files would need a second key and wide table. | Add an `entity` column to `variable` and generate one wide table per entity. |
-| 7 | **No automated tests or CI.** | Nothing fails if QA goes red. | Add a pytest that builds the sample and asserts the QA counts, and fail CI on a non-zero `v_qa_summary`. |
+| 7 | **No CI yet.** A pytest suite exists (`uv run pytest`) but nothing runs it automatically. | A broken change can be merged unnoticed. | Run the suite in CI on every pull request. In Fabric, blocking QA checks already fail the pipeline run. |
 | 8 | **Build output is committed.** `housing_meta.duckdb` (~6 MB) is tracked in git. | Noisy diffs and merge conflicts. | Add `*.duckdb` to `.gitignore` and `git rm --cached` it. |
 
 ---

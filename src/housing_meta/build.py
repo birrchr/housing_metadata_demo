@@ -16,10 +16,13 @@ from __future__ import annotations
 
 import argparse
 import re
+from importlib import resources
 from pathlib import Path
 
 import duckdb
 
+# Repo root: only used for local CLI defaults. Nothing in build() depends on it,
+# so the package also works when installed as a wheel (e.g. in a Fabric notebook).
 ROOT = Path(__file__).resolve().parents[2]
 PARTITION_RE = re.compile(r"year=(\d{4})[/\\]province=([A-Za-z]+)")
 
@@ -32,8 +35,9 @@ REFERENCE_TABLES = [  # load order respects foreign keys
 ]
 
 
-def run_sql_file(con: duckdb.DuckDBPyConnection, path: Path) -> None:
-    con.execute(path.read_text())
+def run_sql_file(con: duckdb.DuckDBPyConnection, name: str) -> None:
+    """Run one of the SQL files shipped inside the package (housing_meta/sql/)."""
+    con.execute(resources.files("housing_meta").joinpath("sql", name).read_text())
 
 
 def load_reference(con: duckdb.DuckDBPyConnection, meta_dir: Path) -> None:
@@ -49,7 +53,13 @@ def load_reference(con: duckdb.DuckDBPyConnection, meta_dir: Path) -> None:
         print(f"  meta.{table:<18} {n:>5} rows")
 
 
-def discover(raw_dir: Path, years: set[int] | None) -> list[tuple[str, int, Path]]:
+def discover(
+    raw_dir: Path,
+    years: set[int] | None = None,
+    provinces: set[str] | None = None,
+) -> list[tuple[str, int, Path]]:
+    """Find year=YYYY/province=XX/*.parquet files, optionally filtered."""
+    provinces = {p.upper() for p in provinces} if provinces else None
     found = []
     for f in sorted(raw_dir.rglob("*.parquet")):
         m = PARTITION_RE.search(f.as_posix())
@@ -57,7 +67,7 @@ def discover(raw_dir: Path, years: set[int] | None) -> list[tuple[str, int, Path
             print(f"  skip (no year=/province= in path): {f}")
             continue
         year, prov = int(m.group(1)), m.group(2).upper()
-        if years is None or year in years:
+        if (years is None or year in years) and (provinces is None or prov in provinces):
             found.append((prov, year, f))
     return found
 
@@ -188,25 +198,37 @@ def build(
     meta_dir: Path,
     raw_dir: Path,
     years: set[int] | None = None,
-) -> None:
-    """Run the whole pipeline against an open connection (file or in-memory)."""
+    provinces: set[str] | None = None,
+    require_files: bool = False,
+) -> list[tuple[str, int, Path]]:
+    """Run the whole pipeline against an open connection (file or in-memory).
+
+    `years` / `provinces` limit which deliveries are (re)loaded. With
+    `require_files=True` an empty selection is an error rather than a warning,
+    which is what a pipeline run for one province-year wants.
+    Returns the (province, year, path) list that was loaded.
+    """
     print("Reference metadata")
-    run_sql_file(con, ROOT / "sql" / "01_schema.sql")
+    run_sql_file(con, "01_schema.sql")
     load_reference(con, Path(meta_dir))
 
     print("Datasets")
-    files = discover(Path(raw_dir), years)
+    files = discover(Path(raw_dir), years, provinces)
     if not files:
-        print("  no parquet files found - run generate_sample first")
+        msg = f"no parquet files found under {raw_dir} for years={years} provinces={provinces}"
+        if require_files:
+            raise FileNotFoundError(msg)
+        print(f"  {msg} - run housing-sample first?")
     for prov, year, path in files:
         load_dataset(con, prov, year, path)
 
-    run_sql_file(con, ROOT / "sql" / "02_views.sql")
+    run_sql_file(con, "02_views.sql")
     build_wide(con)
 
     print("QA summary")
     for name, n in con.execute("SELECT * FROM meta.v_qa_summary").fetchall():
         print(f"  {'OK ' if n == 0 else '!! '} {name:<18} {n}")
+    return files
 
 
 def main() -> None:
@@ -215,11 +237,18 @@ def main() -> None:
     ap.add_argument("--raw", default=str(ROOT / "data" / "raw"))
     ap.add_argument("--metadata", default=str(ROOT / "metadata"))
     ap.add_argument("--year", type=int, nargs="*", help="Only (re)load these reference years")
+    ap.add_argument("--province", nargs="*", help="Only (re)load these provinces, e.g. --province ON")
     ap.add_argument("--export", metavar="DIR", help="Write every table to Parquet in DIR")
     args = ap.parse_args()
 
     con = duckdb.connect(args.db)
-    build(con, Path(args.metadata), Path(args.raw), set(args.year) if args.year else None)
+    build(
+        con,
+        Path(args.metadata),
+        Path(args.raw),
+        set(args.year) if args.year else None,
+        set(args.province) if args.province else None,
+    )
 
     if args.export:
         export(con, Path(args.export))
