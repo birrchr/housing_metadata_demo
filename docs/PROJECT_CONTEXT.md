@@ -33,9 +33,9 @@ Warehouse as the final store.
 
 | Item | State |
 |---|---|
-| Branch | `main` (the `notebook-walkthrough` branch was merged by Chris) |
-| Last commit | `d31dc95 Update .gitignore` (Chris's commit: metadata is now tracked; `/data` stays ignored) |
-| **Uncommitted** | All the Fabric work: `src/housing_meta/{staging,fabric_run,fabric_api,fabric_pipeline,fabric_cli}.py`, `src/housing_meta/fabric_assets/`, the SQL move into `src/housing_meta/sql/`, `fabric/`, `tests/`, `docs/fabric_deployment_design.md`, `docs/deck_src/`, this file, plus edits to `README.md`, `pyproject.toml`, `uv.lock`, `build.py` and the walkthrough notebook (one `;` added) |
+| Branch | `fabric` (branched from `main` at `d31dc95`); `main` has the notebook, deck and README work |
+| Last commits | `d30e62e` Fabric pipeline, tests, design doc, context doc (on `fabric`); `d31dc95 Update .gitignore` (Chris, on `main`: metadata tracked, `/data` ignored) |
+| Uncommitted | Nothing except `.vscode/` (deliberately left out) |
 | Tests | 13 passing locally (`uv run pytest`) |
 | Fabric | **Not yet deployed or tested in a real workspace.** Chris plans to test one province at a time |
 
